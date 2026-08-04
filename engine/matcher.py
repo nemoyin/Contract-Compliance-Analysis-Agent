@@ -1,7 +1,9 @@
 """条款匹配引擎 — 规则粗筛 + LLM 语义判定"""
 import re
+import json as json_mod
 import logging
 from typing import Optional
+from engine.llm import LLMProvider, LLMError
 from engine.models import StandardItem, Contract, ServiceClause, MatchResult
 
 logger = logging.getLogger(__name__)
@@ -188,3 +190,155 @@ def _find_best_sentence(text: str, keywords: list[str]) -> str:
             best_hits = hits
             best = sent.strip()
     return best[:200]
+
+
+MATCH_BATCH_PROMPT = """你是物业合同合规审查专家。请依次判断以下<规范-合同>条款对是否满足。
+
+{items}
+
+判定标准：
+- 满足：合同明确覆盖了规范要求的服务内容和频率
+- 部分满足：覆盖了服务内容但频率/范围不足
+- 不满足：合同未涉及或明确排除
+
+请以 JSON 返回所有结果：
+{{"results": [
+  {{"index": 0, "verdict": "满足/部分满足/不满足", "evidence": "合同原文片段", "confidence": 0.0~1.0, "reasoning": "判定依据"}},
+  ...
+]}}"""
+
+
+def llm_match_batch(
+    pending: list[tuple[Contract, StandardItem, float]],
+    provider: Optional[LLMProvider],
+) -> list[MatchResult]:
+    """阶段2: LLM 批量语义判定"""
+    if not pending:
+        return []
+
+    if provider is None:
+        return [
+            MatchResult(
+                contract_id=c.id, standard_item_id=s.id,
+                verdict="不确定", evidence="LLM 不可用",
+                confidence=0.0, method="llm", matched_level=0,
+            )
+            for c, s, _ in pending
+        ]
+
+    # 构建批量 Prompt
+    item_lines = []
+    for i, (contract, std_item, _) in enumerate(pending):
+        contract_text = " ".join(cl.content for cl in contract.service_clauses[:20])
+        item_lines.append(
+            f"[{i}] 规范要求: {std_item.requirement}\n"
+            f"    合同条款: {contract_text[:500]}"
+        )
+    items_text = "\n\n".join(item_lines)
+
+    try:
+        response = provider.chat([
+            {"role": "user", "content": MATCH_BATCH_PROMPT.format(items=items_text)}
+        ])
+        result_data = json_mod.loads(_strip_markdown_code(response))
+        llm_results = result_data.get("results", [])
+
+        # 构建索引 → 结果的映射
+        result_map: dict[int, dict] = {}
+        for r in llm_results:
+            result_map[r.get("index", -1)] = r
+
+        results = []
+        for i, (contract, std_item, _) in enumerate(pending):
+            if i in result_map:
+                r = result_map[i]
+                results.append(MatchResult(
+                    contract_id=contract.id,
+                    standard_item_id=std_item.id,
+                    verdict=str(r.get("verdict", "不确定")),
+                    evidence=str(r.get("evidence", "")),
+                    confidence=float(r.get("confidence", 0.5)),
+                    method="llm",
+                    matched_level=_infer_matched_level(std_item, r.get("verdict", "")),
+                ))
+            else:
+                results.append(MatchResult(
+                    contract_id=contract.id, standard_item_id=std_item.id,
+                    verdict="不确定", evidence="LLM 未返回该条结果",
+                    confidence=0.0, method="llm", matched_level=0,
+                ))
+        return results
+    except (LLMError, json_mod.JSONDecodeError, KeyError) as e:
+        logger.warning(f"LLM 批量判定失败: {e}")
+        return [
+            MatchResult(
+                contract_id=c.id, standard_item_id=s.id,
+                verdict="不确定", evidence=f"LLM 调用失败: {e}",
+                confidence=0.0, method="llm", matched_level=0,
+            )
+            for c, s, _ in pending
+        ]
+
+
+def match_contract(
+    contract: Contract,
+    standard_items: list[StandardItem],
+    provider: Optional[LLMProvider] = None,
+    threshold: float = 0.9,
+) -> list[MatchResult]:
+    """完整的混合匹配流水线：规则 → LLM"""
+    rule_results, pending = rule_match(contract, standard_items, threshold)
+    llm_pending = [(c, s, conf) for c, s, conf in pending]
+    llm_results = llm_match_batch(llm_pending, provider)
+    return rule_results + llm_results
+
+
+def match_all_contracts(
+    contracts: list[Contract],
+    standard_items: list[StandardItem],
+    provider: Optional[LLMProvider] = None,
+    threshold: float = 0.9,
+    batch_size: int = 20,
+) -> dict[str, list[MatchResult]]:
+    """批量匹配所有合同，LLM 判定项跨合同合并批量调用"""
+    # 第一阶段：对所有合同执行规则匹配
+    all_pending: list[tuple[Contract, StandardItem, float]] = []
+    all_results: dict[str, list[MatchResult]] = {}
+
+    for contract in contracts:
+        rule_results, pending = rule_match(contract, standard_items, threshold)
+        all_results[contract.id] = list(rule_results)
+        all_pending.extend(pending)
+
+    logger.info(f"规则阶段完成: {sum(len(v) for v in all_results.values())} 条确定, "
+                f"{len(all_pending)} 条待 LLM 判定")
+
+    # 第二阶段：将 pending 分批送 LLM
+    for i in range(0, len(all_pending), batch_size):
+        batch = all_pending[i:i + batch_size]
+        llm_results = llm_match_batch(batch, provider)
+        # 将结果归入对应合同
+        for result in llm_results:
+            if result.contract_id in all_results:
+                all_results[result.contract_id].append(result)
+
+    return all_results
+
+
+def _infer_matched_level(item: StandardItem, verdict: str) -> int:
+    """根据判定结果推断实际达到的等级"""
+    if verdict == "满足":
+        return item.level
+    return 0
+
+
+def _strip_markdown_code(text: str) -> str:
+    """去除 LLM 响应中的 markdown 代码块包裹"""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines[-1].strip() == "```":
+            text = "\n".join(lines[1:-1])
+        else:
+            text = "\n".join(lines[1:])
+    return text

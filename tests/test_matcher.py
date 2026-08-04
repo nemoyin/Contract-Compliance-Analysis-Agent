@@ -1,6 +1,10 @@
 """测试规则匹配引擎"""
+import json
+from unittest.mock import MagicMock
 import pytest
 from engine.matcher import rule_match, _keyword_match, _exclusion_check, _numeric_compare, _level_infer
+from engine.matcher import llm_match_batch, match_contract, match_all_contracts
+from engine.llm import LLMProvider
 from engine.models import StandardItem, Contract, ServiceClause, MatchResult
 
 
@@ -107,3 +111,69 @@ class TestRuleMatch:
             assert isinstance(r, MatchResult)
         for item in pending:
             assert isinstance(item[0], Contract) or isinstance(item[0], str)
+
+
+class TestLLMMatchBatch:
+    @pytest.fixture
+    def mock_provider(self):
+        provider = MagicMock(spec=LLMProvider)
+        return provider
+
+    @pytest.fixture
+    def sample_pending(self, sample_standards, sample_contract):
+        # 人为构造2条不确定项
+        return [
+            (sample_contract, sample_standards[2], 0.6),  # 24小时值班
+            (sample_contract, sample_standards[3], 0.55),  # 修剪草坪
+        ]
+
+    def test_returns_match_results(self, sample_pending, mock_provider):
+        mock_provider.chat.return_value = json.dumps({
+            "results": [
+                {"index": 0, "verdict": "满足", "evidence": "24小时安保值班", "confidence": 0.85, "reasoning": "合同有24小时值班"},
+                {"index": 1, "verdict": "部分满足", "evidence": "合同未明确修剪频次", "confidence": 0.70, "reasoning": "绿化条款不明确"},
+            ]
+        })
+        results = llm_match_batch(sample_pending, mock_provider)
+        assert len(results) == 2
+        assert results[0].method == "llm"
+        assert results[0].verdict == "满足"
+
+    def test_empty_pending_returns_empty(self, mock_provider):
+        results = llm_match_batch([], mock_provider)
+        assert results == []
+
+    def test_provider_none_returns_uncertain(self, sample_pending):
+        results = llm_match_batch(sample_pending, None)
+        assert len(results) == 2
+        for r in results:
+            assert r.verdict == "不确定"
+            assert r.method == "llm"
+
+    def test_handles_partial_response(self, sample_pending, mock_provider):
+        # LLM 只返回了1条结果（少了1条）
+        mock_provider.chat.return_value = json.dumps({
+            "results": [
+                {"index": 0, "verdict": "满足", "evidence": "xxx", "confidence": 0.9, "reasoning": "ok"},
+            ]
+        })
+        results = llm_match_batch(sample_pending, mock_provider)
+        # 返回了结果的那条，缺的标记为不确定
+        assert len(results) == 2
+        verdicts = {r.standard_item_id: r.verdict for r in results}
+        assert any(v == "不确定" for v in verdicts.values())
+
+
+class TestMatchContract:
+    def test_combines_rule_and_llm(self, sample_standards, sample_contract):
+        """端到端测试，使用真实规则匹配（无LLM）"""
+        results = match_contract(sample_contract, sample_standards, provider=None, threshold=0.9)
+        assert len(results) == len(sample_standards)
+        methods = {r.method for r in results}
+        assert "rule" in methods  # 规则阶段至少产生了一些结果
+
+    def test_all_verdicts_valid(self, sample_standards, sample_contract):
+        results = match_contract(sample_contract, sample_standards, provider=None, threshold=0.9)
+        valid = {"满足", "部分满足", "不满足", "不确定"}
+        for r in results:
+            assert r.verdict in valid
