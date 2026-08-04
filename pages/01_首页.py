@@ -14,7 +14,9 @@ standards_path = os.path.join(data_dir, "standards.xlsx")
 meta_path = os.path.join(data_dir, "contracts_meta.xlsx")
 contracts_dir = os.path.join(data_dir, "contracts")
 
+config_path = os.path.join(data_dir, "config.json")
 cache_mgr = CacheManager(cache_dir)
+cfg = ConfigManager(config_path)
 
 col1, col2, col3, col4 = st.columns(4)
 
@@ -58,8 +60,27 @@ st.info(
 )
 
 if st.button("🔄 初始化/刷新数据缓存", type="primary", use_container_width=True):
-    with st.status("正在初始化...", expanded=True) as status:
-        st.write("步骤 1/5: 加载规范和元数据...")
-        # 这里调用实际的处理逻辑
-        status.update(label="初始化完成！", state="complete")
-    st.success("缓存已就绪，可以开始分析！")
+    config = cfg.load()
+
+    if not config["llm"].get("api_key"):
+        st.error("请先在「模型供应商配置」页面设置 API Key")
+    else:
+        with st.status("正在初始化...", expanded=True) as status:
+            st.write("步骤 1/4: 加载规范标准和合同元数据...")
+            st.write("步骤 2/4: 解析 PDF 合同...")
+            st.write("步骤 3/4: 执行规则匹配...")
+            st.write("步骤 4/4: LLM 语义判定...")
+            try:
+                from engine.preprocess import run_preprocessing
+                stats = run_preprocessing(data_dir, config)
+                status.update(label="初始化完成！", state="complete")
+                st.success(
+                    f"✅ {stats['contracts_loaded']} 份合同加载，"
+                    f"{stats['pdfs_processed']} 份 PDF 处理，"
+                    f"{stats['clauses_extracted']} 条服务条款提取，"
+                    f"{stats['results_cached']} 份结果缓存"
+                )
+                st.rerun()
+            except Exception as e:
+                status.update(label="初始化失败", state="error")
+                st.error(f"❌ 初始化失败: {e}")
