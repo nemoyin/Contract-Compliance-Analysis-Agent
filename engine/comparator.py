@@ -16,6 +16,12 @@ CATEGORIES = [
     "公共秩序维护", "保洁服务", "绿化养护", "其他",
 ]
 
+FEE_ATTR_MAP = {
+    "residential": "residential_fee",
+    "commercial": "commercial_fee",
+    "parking": "parking_fee",
+}
+
 
 def calc_compliance_rate(
     contract_id: str,
@@ -96,7 +102,7 @@ def compare_two(
 
     # LLM 生成总结
     summary = _generate_comparison_summary(
-        contract_a, contract_b, a_report, b_report, a_only, b_only, provider
+        contract_a, contract_b, fee_type, a_report, b_report, a_only, b_only, both_missing, provider
     )
 
     return ComparisonResult(
@@ -149,7 +155,7 @@ def cluster_and_detect(
             if sim >= similarity_threshold:
                 group_members.append(other)
                 visited.add(other)
-        groups.append(_build_quality_group(group_members, contracts, reports, fee_type))
+        groups.append(_build_quality_group(len(groups) + 1, group_members, contracts, reports, fee_type))
 
     # 价格异常检测
     outliers = _detect_outliers(groups, contracts, fee_type, outlier_std)
@@ -183,19 +189,14 @@ def _cosine_similarity(v1: list[float], v2: list[float]) -> float:
 
 
 def _build_quality_group(
+    group_id: int,
     member_ids: list[str],
     contracts: list[Contract],
     reports: dict[str, ComplianceReport],
     fee_type: str,
 ) -> QualityGroup:
     """构建同质组对象"""
-    fee_map = {
-        "residential": lambda c: c.residential_fee,
-        "commercial": lambda c: c.commercial_fee,
-        "parking": lambda c: c.parking_fee,
-    }
-    get_fee = fee_map.get(fee_type, lambda c: c.residential_fee)
-
+    get_fee = lambda c: getattr(c, FEE_ATTR_MAP.get(fee_type, "residential_fee"), 0)
     members = [c for c in contracts if c.id in member_ids]
     fees = [get_fee(c) for c in members]
     avg_fee = sum(fees) / len(fees) if fees else 0.0
@@ -208,7 +209,7 @@ def _build_quality_group(
         price_std = 0.0
 
     return QualityGroup(
-        group_id=len(member_ids),  # placeholder, will be numbered later
+        group_id=group_id,
         contract_ids=member_ids,
         avg_satisfaction=avg_sat,
         avg_price=avg_fee,
@@ -223,12 +224,7 @@ def _detect_outliers(
     outlier_std: float,
 ) -> list[PriceOutlier]:
     """检测价格异常点"""
-    fee_map = {
-        "residential": lambda c: c.residential_fee,
-        "commercial": lambda c: c.commercial_fee,
-        "parking": lambda c: c.parking_fee,
-    }
-    get_fee = fee_map.get(fee_type, lambda c: c.residential_fee)
+    get_fee = lambda c: getattr(c, FEE_ATTR_MAP.get(fee_type, "residential_fee"), 0)
     contract_map = {c.id: c for c in contracts}
 
     outliers = []
@@ -269,21 +265,26 @@ SUMMARY_PROMPT = """你是一个物业合同分析专家。请基于以下两个
 
 def _generate_comparison_summary(
     contract_a: Contract, contract_b: Contract,
+    fee_type: str,
     a_report: ComplianceReport, b_report: ComplianceReport,
     a_only: list[MatchResult], b_only: list[MatchResult],
+    both_missing: list[MatchResult],
     provider: Optional[LLMProvider],
 ) -> str:
     """LLM 生成对比总结"""
     if provider is None:
         return _fallback_summary(contract_a, contract_b, a_report, b_report, a_only, b_only)
+    fee_attr = FEE_ATTR_MAP.get(fee_type, "residential_fee")
+    fee_a = getattr(contract_a, fee_attr, 0)
+    fee_b = getattr(contract_b, fee_attr, 0)
     try:
         prompt = SUMMARY_PROMPT.format(
-            name_a=contract_a.property_name, fee_a=contract_a.residential_fee,
+            name_a=contract_a.property_name, fee_a=fee_a,
             rate_a=round(a_report.total_rate * 100, 1),
-            name_b=contract_b.property_name, fee_b=contract_b.residential_fee,
+            name_b=contract_b.property_name, fee_b=fee_b,
             rate_b=round(b_report.total_rate * 100, 1),
             a_only_count=len(a_only), b_only_count=len(b_only),
-            both_missing_count=len(a_report.details) - a_report.matched_count,
+            both_missing_count=len(both_missing),
         )
         return provider.chat([{"role": "user", "content": prompt}])
     except LLMError:
