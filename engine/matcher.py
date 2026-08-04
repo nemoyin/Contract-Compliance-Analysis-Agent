@@ -145,7 +145,10 @@ def _numeric_compare(requirement: str, contract_text: str) -> tuple[float, str]:
 
             # 频率匹配 — 进一步比较数量
             req_nums = re.findall(r'(\d+)', requirement)
-            contract_nums = re.findall(r'(\d+)', contract_text)
+            # 只从频率关键词出现的邻域(±100字符)提取数字，避免误匹配费用、面积等无关数字
+            idx = contract_text.find(word)
+            context = contract_text[max(0, idx - 100):idx + 100]
+            contract_nums = re.findall(r'(\d+)', context)
             if req_nums and contract_nums:
                 req_count = int(req_nums[-1])
                 contract_count = int(contract_nums[-1])

@@ -45,7 +45,7 @@ EXTRACT_PROMPT = """你是一个物业合同数据提取专家。请从以下合
 - page 编号从1开始，如无法判断填1"""
 
 
-def locate_service_chapters(tree: DocumentTree, provider: LLMProvider) -> list[int]:
+def locate_service_chapters(tree: DocumentTree, provider: Optional[LLMProvider]) -> list[int]:
     """LLM 定位物业服务章节，返回章节索引列表"""
     if provider is None:
         return []
@@ -61,7 +61,7 @@ def locate_service_chapters(tree: DocumentTree, provider: LLMProvider) -> list[i
         return []
 
 
-def extract_service_clauses(text: str, provider: LLMProvider) -> list[ServiceClause]:
+def extract_service_clauses(text: str, provider: Optional[LLMProvider]) -> list[ServiceClause]:
     """LLM 从服务章节文本中提取结构化服务条款"""
     if provider is None:
         return []

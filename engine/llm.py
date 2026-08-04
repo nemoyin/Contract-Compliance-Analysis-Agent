@@ -1,5 +1,5 @@
 """LLM 抽象层：多模型统一接口"""
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import Any, Optional
 from openai import OpenAI
 

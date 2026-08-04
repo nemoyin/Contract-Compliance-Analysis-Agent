@@ -1,6 +1,6 @@
 """PDF 文本提取 + 文档树构建"""
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 

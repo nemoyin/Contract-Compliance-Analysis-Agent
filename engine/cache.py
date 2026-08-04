@@ -3,8 +3,7 @@ import json
 import os
 import time
 import logging
-from dataclasses import asdict
-from typing import Any, Optional
+from typing import Any
 from engine.models import MatchResult, Contract, ServiceClause
 
 logger = logging.getLogger(__name__)
@@ -52,8 +51,12 @@ class CacheManager:
         """
         if not os.path.exists(self.results_path):
             return {}
-        with open(self.results_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            with open(self.results_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"缓存文件损坏，无法加载结果: {self.results_path} — {e}")
+            return {}
         results: dict[str, list[MatchResult]] = {}
         for cid, items in data.items():
             results[cid] = [_dict_to_match_result(item) for item in items]
@@ -73,8 +76,12 @@ class CacheManager:
         """加载缓存的合同对象"""
         if not os.path.exists(self.contracts_path):
             return []
-        with open(self.contracts_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            with open(self.contracts_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"缓存文件损坏，无法加载合同: {self.contracts_path} — {e}")
+            return []
         return [_dict_to_contract(item) for item in data]
 
     def save_contracts(self, contracts: list[Contract]) -> None:
@@ -88,8 +95,12 @@ class CacheManager:
         """获取缓存元数据"""
         if not os.path.exists(self.metadata_path):
             return {}
-        with open(self.metadata_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(self.metadata_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"缓存文件损坏，无法加载元数据: {self.metadata_path} — {e}")
+            return {}
 
     def _write_metadata(self, contract_count: int) -> None:
         meta = {

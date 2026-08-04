@@ -1,7 +1,6 @@
 """预处理流水线：PDF 解析 → 合同提取 → 匹配引擎 → 缓存写入"""
 import os
 import logging
-from engine.config import ConfigManager
 from engine.loader import load_standards, load_contracts_meta
 from engine.llm import create_provider
 from engine.pdf_extractor import extract_contract_from_pdf
