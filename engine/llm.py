@@ -22,7 +22,13 @@ class LLMProvider(ABC):
     @property
     def client(self) -> OpenAI:
         if self._client is None:
-            self._client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+            import httpx
+            self._client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=httpx.Timeout(300.0, connect=15.0),
+                max_retries=1,
+            )
         return self._client
 
     def chat(

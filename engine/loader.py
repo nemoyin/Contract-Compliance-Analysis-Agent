@@ -8,10 +8,17 @@ from engine.models import StandardItem, Contract
 _STANDARDS_COLUMN_MAP = {
     "等级": "level",
     "大类": "category",
+    "项目": "category",
     "内容和要求": "requirement",
     "是否新增": "is_new",
     "是否同比上一级新增": "is_new",
     "备注": "is_new",
+}
+
+# 中文等级 → 数字
+_LEVEL_CN_MAP = {
+    "一级": 1, "二级": 2, "三级": 3, "四级": 4, "五级": 5,
+    "一級": 1, "二級": 2, "三級": 3, "四級": 4, "五級": 5,
 }
 
 _CONTRACTS_COLUMN_MAP = {
@@ -27,6 +34,7 @@ _CONTRACTS_COLUMN_MAP = {
     "商业物业服务费用": "commercial_fee",
     "车位费": "parking_fee",
     "车位费用": "parking_fee",
+    "来源文件": "source_pdf",
 }
 
 
@@ -36,7 +44,7 @@ def load_standards(filepath: str, sheet_name: str | int = 0) -> list[StandardIte
     df = _normalize_standards_columns(df)
     items = []
     for idx, row in df.iterrows():
-        level = int(row["level"])
+        level = _parse_level(row["level"])
         cat = str(row["category"]).strip()
         item_id = f"L{level}-{_category_abbr(cat)}-{idx + 1:03d}"
         is_new = _parse_is_new(row.get("is_new", "否"))
@@ -56,6 +64,9 @@ def load_contracts_meta(filepath: str, sheet_name: str | int = 0) -> list[Contra
     df = _normalize_contracts_columns(df)
     contracts = []
     for idx, row in df.iterrows():
+        source_raw = row.get("source_pdf", "")
+        if isinstance(source_raw, float) and pd.isna(source_raw):
+            source_raw = ""
         contracts.append(Contract(
             id=f"C{idx + 1:03d}",
             property_name=str(row["property_name"]).strip(),
@@ -67,6 +78,7 @@ def load_contracts_meta(filepath: str, sheet_name: str | int = 0) -> list[Contra
             residential_fee=_safe_float(row.get("residential_fee", 0)),
             commercial_fee=_safe_float(row.get("commercial_fee", 0)),
             parking_fee=_safe_float(row.get("parking_fee", 0)),
+            source_pdf=str(source_raw).strip(),
         ))
     return contracts
 
@@ -76,8 +88,10 @@ def _normalize_standards_columns(df: pd.DataFrame) -> pd.DataFrame:
     rename = {}
     for col in df.columns:
         col_str = str(col).strip()
-        if col_str in _STANDARDS_COLUMN_MAP:
-            rename[col] = _STANDARDS_COLUMN_MAP[col_str]
+        for src, target in _STANDARDS_COLUMN_MAP.items():
+            if src == col_str or src in col_str or col_str in src:
+                rename[col] = target
+                break
     return df.rename(columns=rename)
 
 
@@ -85,9 +99,31 @@ def _normalize_contracts_columns(df: pd.DataFrame) -> pd.DataFrame:
     rename = {}
     for col in df.columns:
         col_str = str(col).strip()
-        if col_str in _CONTRACTS_COLUMN_MAP:
-            rename[col] = _CONTRACTS_COLUMN_MAP[col_str]
+        for src, target in _CONTRACTS_COLUMN_MAP.items():
+            if src == col_str or src in col_str or col_str in src:
+                rename[col] = target
+                break
     return df.rename(columns=rename)
+
+
+def _parse_level(val) -> int:
+    """解析等级值，支持中文（五级→5）和数字（5→5）"""
+    if isinstance(val, (int, float)):
+        return int(val)
+    s = str(val).strip()
+    # 先查中文映射
+    if s in _LEVEL_CN_MAP:
+        return _LEVEL_CN_MAP[s]
+    # 尝试直接转数字
+    try:
+        return int(s)
+    except ValueError:
+        # 尝试去掉"级"字再转
+        no_suffix = s.replace("级", "").replace("級", "")
+        try:
+            return int(no_suffix)
+        except ValueError:
+            raise ValueError(f"无法解析等级值: '{val}'")
 
 
 def _parse_is_new(val) -> bool:
@@ -112,8 +148,17 @@ def _category_abbr(category: str) -> str:
 
 
 def _safe_float(val) -> float:
-    """安全转换为 float"""
+    """安全转换为 float，支持 "3.5元/月·平方米" 等格式"""
     try:
         return float(val)
     except (ValueError, TypeError):
+        # 尝试从字符串中提取数字，如 "3.5元/月·平方米" → 3.5
+        import re
+        s = str(val).strip()
+        m = re.search(r'[\d.]+', s)
+        if m:
+            try:
+                return float(m.group())
+            except ValueError:
+                return 0.0
         return 0.0

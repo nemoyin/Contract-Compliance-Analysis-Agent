@@ -170,7 +170,7 @@ if c_a and c_b and c_a_name != c_b_name:
                     line=dict(color='#ff7f0e'),
                 ))
                 fig.update_layout(
-                    polar=dict(radial=dict(range=[0, 100], tickformat=".0f")),
+                    polar=dict(radialaxis=dict(range=[0, 100], tickformat=".0f")),
                     legend=dict(orientation="h", yanchor="bottom", y=-0.15),
                     margin=dict(l=40, r=40, t=20, b=60),
                 )

@@ -3,3 +3,11 @@ __pycache__/
 *.pyc
 data/cache/
 data/contracts/parsed/
+
+
+*.pdf
+
+*.xlsx
+
+# 配置文件含 API key，不提交
+data/config.json
